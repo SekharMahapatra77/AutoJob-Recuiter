@@ -465,7 +465,12 @@ export const AIMatcherPage: React.FC = () => {
               </button>
               {customizedData.savedResume && (
                 <button
-                  onClick={() => window.open(`/api/resumes/${customizedData.savedResume._id}/download`, '_blank')}
+                  onClick={() =>
+                    window.open(
+                      `${import.meta.env.VITE_API_BASE_URL}/resumes/${customizedData.savedResume._id}/download`,
+                      '_blank'
+                    )
+                  }
                   className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold flex items-center space-x-1.5 shadow-sm"
                 >
                   <Download className="w-3.5 h-3.5" />

@@ -81,7 +81,10 @@ export const ResumesPage: React.FC = () => {
   };
 
   const handleDownload = (resumeId: string, fileName: string) => {
-    window.open(`/api/resumes/${resumeId}/download`, '_blank');
+    window.open(
+      `${import.meta.env.VITE_API_BASE_URL}/resumes/${resumeId}/download`,
+      '_blank'
+    );
   };
 
   return (

@@ -64,7 +64,10 @@ export const CsvManagerPage: React.FC = () => {
   };
 
   const handleExport = (type: 'recruiters' | 'jobs') => {
-    window.open(`/api/csv/export?type=${type}`, '_blank');
+    window.open(
+      `${import.meta.env.VITE_API_BASE_URL}/csv/export?type=${type}`,
+      '_blank'
+    );
   };
 
   return (

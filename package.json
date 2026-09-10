@@ -1,0 +1,16 @@
+{
+  "name": "ai-c2c-job-outreach-platform",
+  "version": "1.0.0",
+  "description": "AI-Powered C2C Job Search & Candidate Outreach Platform",
+  "scripts": {
+    "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build": "cd backend && npm run build && cd ../frontend && npm run build",
+    "seed": "cd backend && npm run seed",
+    "test": "cd backend && npm test"
+  },
+  "keywords": ["c2c", "recruitment", "ai", "job-search", "outreach"],
+  "author": "",
+  "license": "ISC"
+}

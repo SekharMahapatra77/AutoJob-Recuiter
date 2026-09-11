@@ -56,6 +56,9 @@ export const handleGmailCallbackLanding = (req: Request, res: Response): void =>
   const { code, state, error } = req.query;
   const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
 
+  // Apply unsafe-none strictly to this popup landing response so the opener reference is preserved
+  res.setHeader('Cross-Origin-Opener-Policy', 'unsafe-none');
+
   const safeCode = typeof code === 'string' ? JSON.stringify(code) : 'null';
   const safeState = typeof state === 'string' ? JSON.stringify(state) : 'null';
   const safeError = typeof error === 'string' ? JSON.stringify(error) : 'null';
@@ -81,6 +84,7 @@ export const handleGmailCallbackLanding = (req: Request, res: Response): void =>
       var code = ${safeCode};
       var state = ${safeState};
       var error = ${safeError};
+      var clientUrl = ${safeClientUrl};
       var targetOrigin = '*';
       try {
         targetOrigin = new URL(clientUrl).origin;
@@ -88,13 +92,32 @@ export const handleGmailCallbackLanding = (req: Request, res: Response): void =>
         targetOrigin = clientUrl;
       }
 
-      if (window.opener && !window.opener.closed) {
-        window.opener.postMessage({ type: 'GMAIL_AUTH_CALLBACK', code: code, state: state, error: error }, targetOrigin);
-        setTimeout(function() { window.close(); }, 500);
-      } else {
+      var messageSent = false;
+
+      try {
+        if (window.opener) {
+          window.opener.postMessage(
+            {
+              type: 'GMAIL_AUTH_CALLBACK',
+              code: code,
+              state: state,
+              error: error
+            },
+            targetOrigin
+          );
+
+          messageSent = true;
+
+          setTimeout(function () {
+            window.close();
+          }, 300);
+        }
+      } catch (err) {
+        console.warn('OAuth popup communication failed');
+      }
+
+      if (!messageSent) {
         var target = new URL('/settings', clientUrl);
-        if (code) target.searchParams.set('code', code);
-        if (state) target.searchParams.set('state', state);
         if (error) target.searchParams.set('error', error);
         window.location.href = target.toString();
       }

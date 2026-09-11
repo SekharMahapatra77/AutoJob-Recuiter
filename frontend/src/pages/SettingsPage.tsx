@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -24,6 +24,23 @@ export const SettingsPage: React.FC = () => {
   const [saveMessage, setSaveMessage] = useState('');
   const [connectingGmail, setConnectingGmail] = useState(false);
   const [gmailError, setGmailError] = useState('');
+
+  // OAuth popup tracking refs
+  const popupRef = useRef<Window | null>(null);
+  const popupPollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const oauthTimeoutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearOAuthTimers = () => {
+    if (popupPollTimerRef.current) {
+      clearInterval(popupPollTimerRef.current);
+      popupPollTimerRef.current = null;
+    }
+    if (oauthTimeoutTimerRef.current) {
+      clearTimeout(oauthTimeoutTimerRef.current);
+      oauthTimeoutTimerRef.current = null;
+    }
+    popupRef.current = null;
+  };
 
   // IMAP and AI configuration form
   const [formData, setFormData] = useState({
@@ -62,6 +79,7 @@ export const SettingsPage: React.FC = () => {
   };
 
   const completeGmailConnect = async (code: string, state: string) => {
+    clearOAuthTimers();
     setConnectingGmail(true);
     setGmailError('');
     try {
@@ -80,9 +98,12 @@ export const SettingsPage: React.FC = () => {
     }
   };
 
-  // 1. Initial settings fetch
+  // 1. Initial settings fetch & cleanup on unmount
   useEffect(() => {
     fetchSettings();
+    return () => {
+      clearOAuthTimers();
+    };
   }, []);
 
   // 2. Popup postMessage listener with origin validation
@@ -107,9 +128,11 @@ export const SettingsPage: React.FC = () => {
       if (event.data?.type === 'GMAIL_AUTH_CALLBACK') {
         const { code, state, error } = event.data;
         if (error) {
+          clearOAuthTimers();
           const msg = `Gmail authorization error: ${error}`;
           setGmailError(msg);
           alert(msg);
+          setConnectingGmail(false);
           return;
         }
         if (code && state) {
@@ -143,18 +166,54 @@ export const SettingsPage: React.FC = () => {
   }, [searchParams]);
 
   const handleConnectGmail = async () => {
+    clearOAuthTimers();
     setConnectingGmail(true);
     setGmailError('');
     try {
       const res = await api.get('/settings/gmail/auth-url');
       if (res.data.success && res.data.data.url) {
         const popup = window.open(res.data.data.url, 'gmail-oauth', 'width=550,height=600');
-        if (!popup || popup.closed || typeof popup.closed === 'undefined') {
+        if (!popup) {
           // Popup blocked or not supported, redirect in same window
           window.location.href = res.data.data.url;
+          return;
         }
+
+        popupRef.current = popup;
+
+        // Poll for manual popup closure
+        popupPollTimerRef.current = setInterval(() => {
+          try {
+            if (popupRef.current && popupRef.current.closed) {
+              clearOAuthTimers();
+              setConnectingGmail((prev) => {
+                if (prev) {
+                  setGmailError('Gmail connection was cancelled or the popup window was closed.');
+                }
+                return false;
+              });
+            }
+          } catch (e) {
+            // Guard against potential cross-origin property access errors
+          }
+        }, 500);
+
+        // Safety timeout to prevent indefinite loading (3 minutes)
+        oauthTimeoutTimerRef.current = setTimeout(() => {
+          clearOAuthTimers();
+          setConnectingGmail((prev) => {
+            if (prev) {
+              setGmailError('Gmail connection timed out. Please try again.');
+              if (popupRef.current && !popupRef.current.closed) {
+                try { popupRef.current.close(); } catch (e) {}
+              }
+            }
+            return false;
+          });
+        }, 180000);
       }
     } catch (err: any) {
+      clearOAuthTimers();
       alert(
         err.response?.data?.message ||
           'Google OAuth Client ID & Secret are not yet configured in .env. The platform will automatically use standard SMTP or development simulation mode.'

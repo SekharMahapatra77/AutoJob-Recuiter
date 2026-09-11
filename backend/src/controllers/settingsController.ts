@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import mongoose from 'mongoose';
 import { Settings } from '../models/Settings';
 import { gmailService } from '../services/gmail/gmailService';
@@ -56,6 +57,15 @@ export const handleGmailCallbackLanding = (req: Request, res: Response): void =>
   const { code, state, error } = req.query;
   const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
 
+  // Generate a cryptographically secure CSP nonce for this callback response
+  const nonce = crypto.randomBytes(16).toString('base64');
+
+  // Set Content-Security-Policy allowing the generated nonce for inline script execution
+  res.setHeader(
+    'Content-Security-Policy',
+    `script-src 'self' 'nonce-${nonce}'; object-src 'none'; base-uri 'self'`
+  );
+
   // Apply unsafe-none strictly to this popup landing response so the opener reference is preserved
   res.setHeader('Cross-Origin-Opener-Policy', 'unsafe-none');
 
@@ -79,7 +89,7 @@ export const handleGmailCallbackLanding = (req: Request, res: Response): void =>
     <h3>Authenticating with Gmail...</h3>
     <p>Please wait while we complete authorization.</p>
   </div>
-  <script>
+  <script nonce="${nonce}">
     (function() {
       var code = ${safeCode};
       var state = ${safeState};

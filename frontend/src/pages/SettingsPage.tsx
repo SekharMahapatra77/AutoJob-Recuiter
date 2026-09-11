@@ -27,14 +27,9 @@ export const SettingsPage: React.FC = () => {
 
   // OAuth popup tracking refs
   const popupRef = useRef<Window | null>(null);
-  const popupPollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const oauthTimeoutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearOAuthTimers = () => {
-    if (popupPollTimerRef.current) {
-      clearInterval(popupPollTimerRef.current);
-      popupPollTimerRef.current = null;
-    }
     if (oauthTimeoutTimerRef.current) {
       clearTimeout(oauthTimeoutTimerRef.current);
       oauthTimeoutTimerRef.current = null;
@@ -181,35 +176,19 @@ export const SettingsPage: React.FC = () => {
 
         popupRef.current = popup;
 
-        // Poll for manual popup closure
-        popupPollTimerRef.current = setInterval(() => {
-          try {
-            if (popupRef.current && popupRef.current.closed) {
-              clearOAuthTimers();
-              setConnectingGmail((prev) => {
-                if (prev) {
-                  setGmailError('Gmail connection was cancelled or the popup window was closed.');
-                }
-                return false;
-              });
-            }
-          } catch (e) {
-            // Guard against potential cross-origin property access errors
-          }
-        }, 500);
-
         // Safety timeout to prevent indefinite loading (3 minutes)
         oauthTimeoutTimerRef.current = setTimeout(() => {
           clearOAuthTimers();
           setConnectingGmail((prev) => {
             if (prev) {
               setGmailError('Gmail connection timed out. Please try again.');
-              if (popupRef.current && !popupRef.current.closed) {
-                try { popupRef.current.close(); } catch (e) {}
-              }
             }
             return false;
           });
+
+          try {
+            popup.close();
+          } catch {}
         }, 180000);
       }
     } catch (err: any) {

@@ -6,6 +6,66 @@ import crypto from 'crypto';
 import mongoose from 'mongoose';
 import { Settings, ISettings } from '../../models/Settings';
 import { OAuthState } from '../../models/OAuthState';
+import { Reply } from '../../models/Reply';
+import { Recruiter } from '../../models/Recruiter';
+import { Outreach } from '../../models/Outreach';
+import { aiService } from '../ai/aiProvider';
+import { stopFollowUpsForRecruiter } from '../outreach/followUpService';
+import { logActivity } from '../activityLogger';
+
+function extractCleanEmail(fromHeader: string): string {
+  if (!fromHeader) return '';
+  const match = fromHeader.match(/<([^>]+)>/);
+  if (match && match[1]) {
+    return match[1].trim().toLowerCase();
+  }
+  return fromHeader.trim().toLowerCase();
+}
+
+function extractGmailBody(payload: any): string {
+  if (!payload) return '';
+
+  if (payload.body?.data) {
+    try {
+      return Buffer.from(payload.body.data, 'base64url').toString('utf8');
+    } catch {
+      return Buffer.from(payload.body.data.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    }
+  }
+
+  if (payload.parts && Array.isArray(payload.parts)) {
+    const plainPart = payload.parts.find((p: any) => p.mimeType === 'text/plain');
+    if (plainPart?.body?.data) {
+      try {
+        return Buffer.from(plainPart.body.data, 'base64url').toString('utf8');
+      } catch {
+        return Buffer.from(plainPart.body.data.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+      }
+    }
+
+    for (const part of payload.parts) {
+      if (part.parts) {
+        const nested = extractGmailBody(part);
+        if (nested) return nested;
+      }
+    }
+
+    const htmlPart = payload.parts.find((p: any) => p.mimeType === 'text/html');
+    if (htmlPart?.body?.data) {
+      try {
+        const html = Buffer.from(htmlPart.body.data, 'base64url').toString('utf8');
+        return html
+          .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+          .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+      } catch {}
+    }
+  }
+
+  return payload.snippet || '';
+}
 
 export class GmailService {
   private getOAuthClient() {
@@ -223,6 +283,217 @@ export class GmailService {
       threadId: `thread-${Date.now()}`,
       method: 'SIMULATED' as const
     };
+  }
+
+  async syncGmailReplies(userId?: string): Promise<{ checked: number; imported: number }> {
+    console.log('[REPLY SYNC] Checking Gmail...');
+    let settingsList: ISettings[] = [];
+
+    if (userId) {
+      const s = await Settings.findOne({ userId: new mongoose.Types.ObjectId(userId) });
+      if (s && s.gmailConnected && s.gmailTokens?.access_token) {
+        settingsList.push(s);
+      }
+    } else {
+      settingsList = await Settings.find({
+        gmailConnected: true,
+        'gmailTokens.access_token': { $exists: true }
+      });
+    }
+
+    if (settingsList.length === 0) {
+      console.log('[REPLY SYNC] No active Gmail OAuth connection found to sync.');
+      return { checked: 0, imported: 0 };
+    }
+
+    let totalChecked = 0;
+    let totalImported = 0;
+
+    for (const settings of settingsList) {
+      try {
+        const oauth2Client = this.getOAuthClient();
+        oauth2Client.setCredentials(settings.gmailTokens!);
+
+        // Persist refreshed tokens automatically
+        oauth2Client.on('tokens', async (tokens) => {
+          if (tokens.access_token) {
+            await Settings.findOneAndUpdate(
+              { userId: settings.userId },
+              {
+                $set: {
+                  'gmailTokens.access_token': tokens.access_token,
+                  ...(tokens.refresh_token && { 'gmailTokens.refresh_token': tokens.refresh_token }),
+                  ...(tokens.expiry_date && { 'gmailTokens.expiry_date': tokens.expiry_date })
+                }
+              }
+            );
+          }
+        });
+
+        const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+        const listRes = await gmail.users.messages.list({
+          userId: 'me',
+          maxResults: 30,
+          q: 'in:inbox'
+        });
+
+        const messages = listRes.data.messages || [];
+        console.log(`[REPLY SYNC] Found ${messages.length} inbox messages to inspect for user ${settings.gmailEmail || settings.userId}.`);
+
+        for (const msgRef of messages) {
+          if (!msgRef.id) continue;
+
+          // 1. Check if already stored by messageId or threadId
+          const alreadyImported = await Reply.findOne({
+            $or: [
+              { messageId: msgRef.id },
+              { messageId: `gmail-${msgRef.id}` }
+            ]
+          });
+
+          if (alreadyImported) {
+            totalChecked++;
+            continue;
+          }
+
+          // 2. Fetch full message details from Gmail
+          const msg = await gmail.users.messages.get({
+            userId: 'me',
+            id: msgRef.id,
+            format: 'full'
+          });
+
+          totalChecked++;
+
+          const headers = msg.data.payload?.headers || [];
+          const getHeader = (name: string) => {
+            const h = headers.find(hdr => hdr.name?.toLowerCase() === name.toLowerCase());
+            return h?.value || '';
+          };
+
+          const fromHeader = getHeader('From');
+          const subject = getHeader('Subject') || 'No Subject';
+          const rfcMessageId = getHeader('Message-ID') || msgRef.id;
+          const dateHeader = getHeader('Date');
+          const receivedAt = dateHeader ? new Date(dateHeader) : new Date();
+
+          const senderEmail = extractCleanEmail(fromHeader);
+
+          // Skip self-sent emails from the connected account
+          const connectedUserEmail = (settings.gmailEmail || '').trim().toLowerCase();
+          if (connectedUserEmail && senderEmail === connectedUserEmail) {
+            continue;
+          }
+
+          // Check if RFC Message-ID was already stored
+          if (rfcMessageId) {
+            const existsRfc = await Reply.findOne({ messageId: rfcMessageId });
+            if (existsRfc) continue;
+          }
+
+          const body = extractGmailBody(msg.data.payload);
+
+          console.log(`[REPLY SYNC] Found new message from "${senderEmail}" (Subject: "${subject}")...`);
+
+          // 3. Match recruiter by email
+          let recruiter = await Recruiter.findOne({ email: senderEmail });
+          if (!recruiter) {
+            recruiter = await Recruiter.findOne({
+              email: { $regex: new RegExp(`^${senderEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
+            });
+          }
+
+          // 4. Match outreach by threadId
+          let outreach = null;
+          if (msg.data.threadId) {
+            outreach = await Outreach.findOne({
+              $or: [
+                { threadId: msg.data.threadId },
+                { messageId: msg.data.threadId }
+              ]
+            });
+          }
+
+          // Cross-resolve recruiter from outreach if not yet resolved
+          if (outreach && !recruiter && outreach.recruiterId) {
+            recruiter = await Recruiter.findById(outreach.recruiterId);
+          }
+
+          // Cross-resolve outreach from recruiter if not matched by threadId
+          if (recruiter && !outreach) {
+            outreach = await Outreach.findOne({
+              recruiterId: recruiter._id,
+              status: { $in: ['SENT', 'DELIVERED', 'SCHEDULED', 'SENDING', 'REPLIED'] }
+            }).sort({ sentAt: -1 });
+          }
+
+          if (!recruiter) {
+            console.log(`[REPLY SYNC] Message from unknown sender: ${senderEmail}. Skipping non-recruiter email.`);
+            continue;
+          }
+
+          console.log(`[REPLY SYNC] Matched recruiter "${recruiter.name}" (${recruiter.email})...`);
+
+          // 5. Classify reply using AI
+          const classification = await aiService.classifyReply(body, subject);
+          console.log(`[REPLY SYNC] AI classified reply as [${classification.category}] with ${Math.round(classification.confidence * 100)}% confidence.`);
+
+          // 6. Create Reply record
+          const reply = await Reply.create({
+            recruiterId: recruiter._id,
+            outreachId: outreach?._id,
+            messageId: msgRef.id,
+            threadId: msg.data.threadId,
+            sender: senderEmail,
+            subject,
+            body,
+            category: classification.category,
+            confidence: classification.confidence,
+            receivedAt,
+            processed: true,
+            notes: classification.reasoning
+          });
+
+          console.log(`[REPLY SYNC] Reply saved successfully.`);
+          totalImported++;
+
+          // 7. Update Outreach status
+          if (outreach) {
+            await Outreach.findByIdAndUpdate(outreach._id, {
+              status: 'REPLIED',
+              nextFollowUpAt: null
+            });
+          }
+
+          // 8. Update Recruiter status based on reply category
+          let recruiterStatus: any = 'REPLIED';
+          if (classification.category === 'INTERESTED' || classification.category === 'INTERVIEW') {
+            recruiterStatus = 'INTERESTED';
+          } else if (classification.category === 'NOT_INTERESTED') {
+            recruiterStatus = 'NOT_INTERESTED';
+          }
+          await Recruiter.findByIdAndUpdate(recruiter._id, { status: recruiterStatus });
+
+          // 9. Stop further follow-ups for this recruiter
+          await stopFollowUpsForRecruiter(
+            recruiter._id.toString(),
+            `Reply received classified as ${classification.category}`
+          );
+
+          // 10. Record Activity Log
+          await logActivity(
+            'REPLY_RECEIVED',
+            'Reply',
+            reply._id.toString(),
+            `Received reply from ${recruiter.name} (${recruiter.email}) - Classified as [${classification.category}] with ${Math.round(classification.confidence * 100)}% confidence`
+          );
+        }
+      } catch (userErr: any) {
+        console.warn(`[REPLY SYNC] Error syncing Gmail for user ${settings.gmailEmail || settings.userId}:`, userErr.message);
+      }
+    }
+
+    return { checked: totalChecked, imported: totalImported };
   }
 }
 

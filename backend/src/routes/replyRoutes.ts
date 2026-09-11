@@ -17,5 +17,6 @@ router.get('/:id', getReplyById);
 router.put('/:id/category', updateReplyCategory);
 router.post('/simulate', simulateIncomingReply);
 router.post('/sync-imap', syncImapNow);
+router.post('/sync', syncImapNow);
 
 export default router;

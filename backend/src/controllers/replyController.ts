@@ -5,6 +5,7 @@ import { Outreach } from '../models/Outreach';
 import { imapService } from '../services/imap/imapService';
 import { stopFollowUpsForRecruiter } from '../services/outreach/followUpService';
 import { logActivity } from '../services/activityLogger';
+import { AuthenticatedRequest } from '../middleware/auth';
 
 export const getReplies = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
@@ -140,12 +141,13 @@ export const simulateIncomingReply = async (req: Request, res: Response, next: N
   }
 };
 
-export const syncImapNow = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+export const syncImapNow = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const result = await imapService.syncInbox();
+    const userId = req.user?.id;
+    const result = await imapService.syncInbox(userId);
     res.json({
       success: true,
-      message: `IMAP sync finished. ${result.checked} checked, ${result.imported} new replies.`,
+      message: `Inbox sync finished. ${result.checked} messages inspected, ${result.imported} new replies imported.`,
       data: result
     });
   } catch (err) {

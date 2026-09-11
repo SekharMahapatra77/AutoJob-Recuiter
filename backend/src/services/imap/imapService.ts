@@ -6,6 +6,7 @@ import { Outreach } from '../../models/Outreach';
 import { Reply } from '../../models/Reply';
 import { Settings } from '../../models/Settings';
 import { aiService } from '../ai/aiProvider';
+import { gmailService } from '../gmail/gmailService';
 import { stopFollowUpsForRecruiter } from '../outreach/followUpService';
 import { logActivity } from '../activityLogger';
 
@@ -93,11 +94,28 @@ export class IMAPService {
   }
 
   async syncInbox(userId?: string): Promise<{ checked: number; imported: number }> {
+    // 1. Prioritize Gmail OAuth synchronization (preferred, secure, no passwords required)
     let settings = null;
     if (userId) {
       settings = await Settings.findOne({ userId: new mongoose.Types.ObjectId(userId) });
     }
 
+    if (settings?.gmailConnected && settings?.gmailTokens?.access_token) {
+      return await gmailService.syncGmailReplies(userId);
+    }
+
+    // If userId was not passed (e.g. background cron runner), check all connected Gmail OAuth accounts first
+    if (!userId) {
+      const gmailCount = await Settings.countDocuments({
+        gmailConnected: true,
+        'gmailTokens.access_token': { $exists: true }
+      });
+      if (gmailCount > 0) {
+        return await gmailService.syncGmailReplies();
+      }
+    }
+
+    // 2. Fall back to legacy IMAP credentials if configured in settings or .env
     const host = settings?.imapHost || process.env.IMAP_HOST;
     const user = settings?.imapUser || process.env.IMAP_USER;
     const password = settings?.imapPassword || process.env.IMAP_PASSWORD;

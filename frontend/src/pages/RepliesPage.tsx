@@ -32,6 +32,33 @@ export const RepliesPage: React.FC = () => {
   });
   const [simulating, setSimulating] = useState(false);
 
+  // Live Gmail Sync state
+  const [syncing, setSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const handleSyncReplies = async () => {
+    setSyncing(true);
+    setSyncMessage(null);
+    try {
+      const res = await api.post('/replies/sync');
+      if (res.data.success) {
+        const { checked, imported } = res.data.data || { checked: 0, imported: 0 };
+        setSyncMessage({
+          type: 'success',
+          text: `Gmail sync completed: ${checked} messages inspected, ${imported} new recruiter replies imported.`
+        });
+        await fetchReplies();
+      }
+    } catch (err: any) {
+      setSyncMessage({
+        type: 'error',
+        text: err.response?.data?.message || 'Failed to sync Gmail replies.'
+      });
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const fetchReplies = async () => {
     setLoading(true);
     try {
@@ -135,10 +162,18 @@ export const RepliesPage: React.FC = () => {
             Incoming Replies & Intent Classification
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
-            IMAP email ingestion, AI sentiment & intent categorizer, and automatic follow-up stop trigger.
+            Real-time Gmail OAuth & IMAP ingestion, AI sentiment & intent categorizer, and automatic follow-up stop trigger.
           </p>
         </div>
         <div className="mt-3 sm:mt-0 flex items-center space-x-2">
+          <button
+            onClick={handleSyncReplies}
+            disabled={syncing}
+            className="inline-flex items-center px-3 py-2 border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 shadow-sm transition disabled:opacity-50"
+          >
+            <RefreshCw className={`w-4 h-4 mr-1.5 text-blue-600 ${syncing ? 'animate-spin' : ''}`} />
+            {syncing ? 'Checking Gmail...' : 'Check Gmail for Replies'}
+          </button>
           <button
             onClick={() => setIsSimModalOpen(true)}
             className="inline-flex items-center px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold shadow-sm transition"
@@ -148,6 +183,29 @@ export const RepliesPage: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Sync Status Banner */}
+      {syncMessage && (
+        <div
+          className={`p-3 rounded-xl border text-xs flex items-center justify-between transition ${
+            syncMessage.type === 'error'
+              ? 'bg-rose-50 border-rose-200 text-rose-800'
+              : 'bg-emerald-50 border-emerald-200 text-emerald-800'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            {syncMessage.type === 'error' ? (
+              <XCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
+            ) : (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+            )}
+            <span>{syncMessage.text}</span>
+          </div>
+          <button onClick={() => setSyncMessage(null)} className="text-slate-400 hover:text-slate-600 font-bold ml-3">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Replies Table */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">

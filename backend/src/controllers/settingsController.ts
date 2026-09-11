@@ -23,10 +23,13 @@ export const getSettings = async (req: AuthenticatedRequest, res: Response, next
         imapPort: settings.imapPort || Number(process.env.IMAP_PORT) || 993,
         imapUser: settings.imapUser || process.env.IMAP_USER || '',
         imapTls: settings.imapTls !== undefined ? settings.imapTls : true,
-        aiProvider: settings.aiProvider || process.env.AI_PROVIDER || 'openai',
+        aiProvider: settings.aiProvider || process.env.AI_PROVIDER || (process.env.GEMINI_API_KEY ? 'gemini' : 'openai'),
         aiBaseUrl: settings.aiBaseUrl || process.env.AI_BASE_URL || 'https://api.openai.com/v1',
-        aiModel: settings.aiModel || process.env.AI_MODEL || 'gpt-4o-mini',
-        hasAiKey: Boolean(process.env.AI_API_KEY && process.env.AI_API_KEY.length > 0)
+        aiModel: settings.aiModel || process.env.GEMINI_MODEL || process.env.AI_MODEL || 'gemini-2.5-flash',
+        hasAiKey: Boolean(
+          (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim().length > 0) ||
+          (process.env.AI_API_KEY && process.env.AI_API_KEY.trim().length > 0)
+        )
       }
     });
   } catch (err) {

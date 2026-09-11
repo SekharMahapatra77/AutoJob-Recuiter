@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import imaps from 'imap-simple';
 import { simpleParser } from 'mailparser';
 import { Recruiter } from '../../models/Recruiter';
@@ -91,8 +92,11 @@ export class IMAPService {
     return reply;
   }
 
-  async syncInbox(): Promise<{ checked: number; imported: number }> {
-    const settings = await Settings.findOne({ key: 'global_config' });
+  async syncInbox(userId?: string): Promise<{ checked: number; imported: number }> {
+    let settings = null;
+    if (userId) {
+      settings = await Settings.findOne({ userId: new mongoose.Types.ObjectId(userId) });
+    }
 
     const host = settings?.imapHost || process.env.IMAP_HOST;
     const user = settings?.imapUser || process.env.IMAP_USER;

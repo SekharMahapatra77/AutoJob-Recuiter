@@ -4,6 +4,7 @@ import { FollowUpStatus } from '../types';
 export interface IFollowUp extends Document {
   outreachId: mongoose.Types.ObjectId;
   recruiterId: mongoose.Types.ObjectId;
+  userId?: mongoose.Types.ObjectId;
   sequenceNumber: number;
   scheduledDate: Date;
   status: FollowUpStatus;
@@ -20,6 +21,7 @@ const FollowUpSchema = new Schema<IFollowUp>(
   {
     outreachId: { type: Schema.Types.ObjectId, ref: 'Outreach', required: true, index: true },
     recruiterId: { type: Schema.Types.ObjectId, ref: 'Recruiter', required: true, index: true },
+    userId: { type: Schema.Types.ObjectId, ref: 'User', index: true },
     sequenceNumber: { type: Number, required: true, default: 1 },
     scheduledDate: { type: Date, required: true, index: true },
     status: {

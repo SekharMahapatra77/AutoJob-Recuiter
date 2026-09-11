@@ -2,7 +2,10 @@ import { google } from 'googleapis';
 import nodemailer from 'nodemailer';
 import fs from 'fs';
 import path from 'path';
-import { Settings } from '../../models/Settings';
+import crypto from 'crypto';
+import mongoose from 'mongoose';
+import { Settings, ISettings } from '../../models/Settings';
+import { OAuthState } from '../../models/OAuthState';
 
 export class GmailService {
   private getOAuthClient() {
@@ -13,7 +16,7 @@ export class GmailService {
     return new google.auth.OAuth2(clientId, clientSecret, redirectUri);
   }
 
-  getAuthUrl(): string {
+  async getAuthUrl(userId: string): Promise<string> {
     const oauth2Client = this.getOAuthClient();
     const scopes = [
       'https://www.googleapis.com/auth/gmail.send',
@@ -21,14 +24,41 @@ export class GmailService {
       'https://www.googleapis.com/auth/userinfo.email'
     ];
 
+    const state = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes TTL
+    await OAuthState.create({
+      state,
+      userId: new mongoose.Types.ObjectId(userId),
+      expiresAt
+    });
+
     return oauth2Client.generateAuthUrl({
       access_type: 'offline',
       prompt: 'consent',
-      scope: scopes
+      scope: scopes,
+      state
     });
   }
 
-  async handleCallback(code: string): Promise<{ email: string }> {
+  async handleCallback(userId: string, code: string, state: string): Promise<{ email: string }> {
+    if (!code || !state) {
+      throw new Error('Authorization code and state are required.');
+    }
+
+    // Atomic validate & consume state
+    const oauthState = await OAuthState.findOneAndDelete({
+      state,
+      userId: new mongoose.Types.ObjectId(userId)
+    });
+
+    if (!oauthState) {
+      throw new Error('Invalid, expired, or already-used OAuth state.');
+    }
+
+    if (oauthState.expiresAt < new Date()) {
+      throw new Error('OAuth state has expired.');
+    }
+
     const oauth2Client = this.getOAuthClient();
     const { tokens } = await oauth2Client.getToken(code);
     oauth2Client.setCredentials(tokens);
@@ -38,11 +68,14 @@ export class GmailService {
     const email = userInfo.data.email || 'connected@gmail.com';
 
     await Settings.findOneAndUpdate(
-      { key: 'global_config' },
+      { userId: new mongoose.Types.ObjectId(userId) },
       {
-        gmailConnected: true,
-        gmailEmail: email,
-        gmailTokens: tokens
+        $set: {
+          userId: new mongoose.Types.ObjectId(userId),
+          gmailConnected: true,
+          gmailEmail: email,
+          gmailTokens: tokens
+        }
       },
       { upsert: true, new: true }
     );
@@ -50,35 +83,43 @@ export class GmailService {
     return { email };
   }
 
-  async getConnectionStatus(): Promise<{ connected: boolean; email?: string }> {
-    const settings = await Settings.findOne({ key: 'global_config' });
+  async getConnectionStatus(userId: string): Promise<{ connected: boolean; email?: string }> {
+    const settings = await Settings.findOne({ userId: new mongoose.Types.ObjectId(userId) });
     return {
       connected: Boolean(settings?.gmailConnected),
       email: settings?.gmailEmail || undefined
     };
   }
 
-  async disconnect(): Promise<void> {
+  async disconnect(userId: string): Promise<void> {
     await Settings.findOneAndUpdate(
-      { key: 'global_config' },
+      { userId: new mongoose.Types.ObjectId(userId) },
       {
-        gmailConnected: false,
-        gmailEmail: '',
-        gmailTokens: null
+        $set: {
+          gmailConnected: false,
+          gmailEmail: '',
+          gmailTokens: null
+        }
       }
     );
   }
 
-  async sendEmail(options: {
-    to: string;
-    subject: string;
-    body: string;
-    attachmentPath?: string;
-    attachmentName?: string;
-  }): Promise<{ messageId: string; threadId?: string; method: 'GMAIL_OAUTH' | 'SMTP' | 'SIMULATED' }> {
-    const settings = await Settings.findOne({ key: 'global_config' });
+  async sendEmail(
+    userId: string | undefined,
+    options: {
+      to: string;
+      subject: string;
+      body: string;
+      attachmentPath?: string;
+      attachmentName?: string;
+    }
+  ): Promise<{ messageId: string; threadId?: string; method: 'GMAIL_OAUTH' | 'SMTP' | 'SIMULATED' }> {
+    let settings: ISettings | null = null;
+    if (userId) {
+      settings = await Settings.findOne({ userId: new mongoose.Types.ObjectId(userId) });
+    }
 
-    // 1. Try Gmail OAuth if tokens exist
+    // 1. Try Gmail OAuth if tokens exist for this user
     if (settings?.gmailConnected && settings?.gmailTokens?.access_token) {
       try {
         const oauth2Client = this.getOAuthClient();
@@ -88,7 +129,7 @@ export class GmailService {
 
         // Build RFC 2822 email
         const boundary = `__boundary_${Date.now()}__`;
-        let rawMessage = [
+        const rawMessage = [
           `To: ${options.to}`,
           `Subject: ${options.subject}`,
           `MIME-Version: 1.0`,

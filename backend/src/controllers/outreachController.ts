@@ -118,8 +118,8 @@ export const sendOutreach = async (req: AuthenticatedRequest, res: Response, nex
       }
     }
 
-    // 4. Send email via Gmail / SMTP / Simulated
-    const sendResult = await gmailService.sendEmail({
+    // 4. Send email via Gmail / SMTP / Simulated using current user's credentials
+    const sendResult = await gmailService.sendEmail(req.user!.id, {
       to: normalizedEmail,
       subject,
       body,
@@ -129,6 +129,7 @@ export const sendOutreach = async (req: AuthenticatedRequest, res: Response, nex
 
     // 5. Create Outreach record
     const outreach = await Outreach.create({
+      userId: req.user!.id,
       recruiterId,
       jobId: jobId || undefined,
       candidateId: candidateId || undefined,
@@ -145,8 +146,8 @@ export const sendOutreach = async (req: AuthenticatedRequest, res: Response, nex
       followUpCount: 0
     });
 
-    // 6. Schedule follow-ups automatically
-    await scheduleInitialFollowUps(outreach._id.toString(), recruiterId);
+    // 6. Schedule follow-ups automatically with owner user ID
+    await scheduleInitialFollowUps(outreach._id.toString(), recruiterId, req.user!.id);
 
     // 7. Update Recruiter & Job status
     await Recruiter.findByIdAndUpdate(recruiterId, { status: 'CONTACTED' });

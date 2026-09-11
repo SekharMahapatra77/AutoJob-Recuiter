@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { FollowUp } from '../../models/FollowUp';
 import { Outreach } from '../../models/Outreach';
 import { Recruiter } from '../../models/Recruiter';
@@ -6,12 +7,19 @@ import { logActivity } from '../activityLogger';
 
 const MAX_FOLLOW_UPS = 2;
 
-export const scheduleInitialFollowUps = async (outreachId: string, recruiterId: string): Promise<void> => {
+export const scheduleInitialFollowUps = async (
+  outreachId: string,
+  recruiterId: string,
+  userId?: string
+): Promise<void> => {
+  const userObjectId = userId ? new mongoose.Types.ObjectId(userId) : undefined;
+
   // Follow-up #1: 3 days later
   const followUp1Date = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
   await FollowUp.create({
     outreachId,
     recruiterId,
+    userId: userObjectId,
     sequenceNumber: 1,
     scheduledDate: followUp1Date,
     status: 'PENDING',
@@ -24,6 +32,7 @@ export const scheduleInitialFollowUps = async (outreachId: string, recruiterId: 
   await FollowUp.create({
     outreachId,
     recruiterId,
+    userId: userObjectId,
     sequenceNumber: 2,
     scheduledDate: followUp2Date,
     status: 'PENDING',
@@ -98,9 +107,12 @@ export const processDueFollowUps = async (): Promise<{ processed: number; cancel
       continue;
     }
 
+    // Resolve owner user ID: check followUp.userId or outreach.userId
+    const ownerUserId = followUp.userId?.toString() || outreach.userId?.toString() || undefined;
+
     // Dispatch follow-up email
     try {
-      const sendResult = await gmailService.sendEmail({
+      const sendResult = await gmailService.sendEmail(ownerUserId, {
         to: outreach.recipientEmail,
         subject: `${followUp.subject} (Re: ${outreach.subject})`,
         body: followUp.body

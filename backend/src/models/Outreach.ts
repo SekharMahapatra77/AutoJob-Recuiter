@@ -3,6 +3,7 @@ import { OutreachStatus } from '../types';
 
 export interface IOutreach extends Document {
   recruiterId: mongoose.Types.ObjectId;
+  userId?: mongoose.Types.ObjectId;
   jobId?: mongoose.Types.ObjectId;
   candidateId?: mongoose.Types.ObjectId;
   campaignId?: mongoose.Types.ObjectId;
@@ -26,6 +27,7 @@ export interface IOutreach extends Document {
 const OutreachSchema = new Schema<IOutreach>(
   {
     recruiterId: { type: Schema.Types.ObjectId, ref: 'Recruiter', required: true, index: true },
+    userId: { type: Schema.Types.ObjectId, ref: 'User', index: true },
     jobId: { type: Schema.Types.ObjectId, ref: 'Job', index: true },
     candidateId: { type: Schema.Types.ObjectId, ref: 'Candidate', index: true },
     campaignId: { type: Schema.Types.ObjectId, ref: 'Campaign', index: true },

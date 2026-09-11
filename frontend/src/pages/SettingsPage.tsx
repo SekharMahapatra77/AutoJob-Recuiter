@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -16,10 +17,13 @@ import {
 
 export const SettingsPage: React.FC = () => {
   const { user } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [settings, setSettings] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState('');
+  const [connectingGmail, setConnectingGmail] = useState(false);
+  const [gmailError, setGmailError] = useState('');
 
   // IMAP and AI configuration form
   const [formData, setFormData] = useState({
@@ -57,21 +61,105 @@ export const SettingsPage: React.FC = () => {
     }
   };
 
+  const completeGmailConnect = async (code: string, state: string) => {
+    setConnectingGmail(true);
+    setGmailError('');
+    try {
+      const res = await api.post('/settings/gmail/callback', { code, state });
+      if (res.data.success) {
+        setSaveMessage('Gmail account connected successfully!');
+        setTimeout(() => setSaveMessage(''), 4000);
+        await fetchSettings();
+      }
+    } catch (err: any) {
+      const msg = err.response?.data?.message || 'Failed to connect Gmail account.';
+      setGmailError(msg);
+      alert(msg);
+    } finally {
+      setConnectingGmail(false);
+    }
+  };
+
+  // 1. Initial settings fetch
   useEffect(() => {
     fetchSettings();
   }, []);
 
+  // 2. Popup postMessage listener with origin validation
+  useEffect(() => {
+    const handleOAuthMessage = async (event: MessageEvent) => {
+      // Validate origin against allowed frontend and backend origins
+      const allowedOrigins = [window.location.origin];
+      try {
+        const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
+        const backendOrigin = new URL(apiBase).origin;
+        if (!allowedOrigins.includes(backendOrigin)) {
+          allowedOrigins.push(backendOrigin);
+        }
+      } catch (e) {
+        // fallback
+      }
+
+      if (!allowedOrigins.includes(event.origin)) {
+        return;
+      }
+
+      if (event.data?.type === 'GMAIL_AUTH_CALLBACK') {
+        const { code, state, error } = event.data;
+        if (error) {
+          const msg = `Gmail authorization error: ${error}`;
+          setGmailError(msg);
+          alert(msg);
+          return;
+        }
+        if (code && state) {
+          await completeGmailConnect(code, state);
+        }
+      }
+    };
+
+    window.addEventListener('message', handleOAuthMessage);
+    return () => {
+      window.removeEventListener('message', handleOAuthMessage);
+    };
+  }, []);
+
+  // 3. Direct redirect URL query params detection
+  useEffect(() => {
+    const code = searchParams.get('code');
+    const state = searchParams.get('state');
+    const error = searchParams.get('error');
+
+    if (error) {
+      setGmailError(`Gmail authorization error: ${error}`);
+      searchParams.delete('error');
+      setSearchParams(searchParams, { replace: true });
+    } else if (code && state) {
+      completeGmailConnect(code, state);
+      searchParams.delete('code');
+      searchParams.delete('state');
+      setSearchParams(searchParams, { replace: true });
+    }
+  }, [searchParams]);
+
   const handleConnectGmail = async () => {
+    setConnectingGmail(true);
+    setGmailError('');
     try {
       const res = await api.get('/settings/gmail/auth-url');
       if (res.data.success && res.data.data.url) {
-        window.open(res.data.data.url, '_blank', 'width=550,height=600');
+        const popup = window.open(res.data.data.url, 'gmail-oauth', 'width=550,height=600');
+        if (!popup || popup.closed || typeof popup.closed === 'undefined') {
+          // Popup blocked or not supported, redirect in same window
+          window.location.href = res.data.data.url;
+        }
       }
     } catch (err: any) {
       alert(
         err.response?.data?.message ||
           'Google OAuth Client ID & Secret are not yet configured in .env. The platform will automatically use standard SMTP or development simulation mode.'
       );
+      setConnectingGmail(false);
     }
   };
 
@@ -135,6 +223,13 @@ export const SettingsPage: React.FC = () => {
         </div>
       )}
 
+      {gmailError && (
+        <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs font-semibold flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
+          <span>{gmailError}</span>
+        </div>
+      )}
+
       {/* Gmail OAuth Card */}
       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
         <div className="flex items-center justify-between pb-3 border-b border-slate-100">
@@ -191,10 +286,15 @@ export const SettingsPage: React.FC = () => {
               <button
                 type="button"
                 onClick={handleConnectGmail}
-                className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold shadow-sm transition flex-shrink-0"
+                disabled={connectingGmail}
+                className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white rounded-lg text-xs font-semibold shadow-sm transition flex-shrink-0"
               >
-                <Mail className="w-3.5 h-3.5 mr-1.5" />
-                Connect Gmail Account
+                {connectingGmail ? (
+                  <RefreshCw className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                ) : (
+                  <Mail className="w-3.5 h-3.5 mr-1.5" />
+                )}
+                {connectingGmail ? 'Connecting Gmail...' : 'Connect Gmail Account'}
               </button>
             </div>
           )}

@@ -1,7 +1,8 @@
 import mongoose, { Document, Schema } from 'mongoose';
 
 export interface ISettings extends Document {
-  key: string;
+  userId?: mongoose.Types.ObjectId;
+  key?: string;
   gmailConnected: boolean;
   gmailEmail?: string;
   gmailTokens?: {
@@ -24,7 +25,14 @@ export interface ISettings extends Document {
 
 const SettingsSchema = new Schema<ISettings>(
   {
-    key: { type: String, required: true, unique: true, default: 'global_config' },
+    userId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      unique: true,
+      index: true,
+      sparse: true
+    },
+    key: { type: String, sparse: true },
     gmailConnected: { type: Boolean, default: false },
     gmailEmail: { type: String, default: '' },
     gmailTokens: { type: Schema.Types.Mixed },

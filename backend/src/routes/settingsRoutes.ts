@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   getSettings,
   getGmailAuthUrl,
+  handleGmailCallbackLanding,
   handleGmailCallback,
   disconnectGmail,
   updateIntegrationSettings,
@@ -11,6 +12,10 @@ import { authenticateJWT } from '../middleware/auth';
 
 const router = Router();
 
+// Public callback landing for Google OAuth browser redirect
+router.get('/gmail/callback', handleGmailCallbackLanding);
+
+// Authenticated routes
 router.use(authenticateJWT);
 
 router.get('/', getSettings);

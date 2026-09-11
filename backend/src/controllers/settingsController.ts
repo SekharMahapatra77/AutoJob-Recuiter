@@ -1,13 +1,16 @@
 import { Request, Response, NextFunction } from 'express';
+import mongoose from 'mongoose';
 import { Settings } from '../models/Settings';
 import { gmailService } from '../services/gmail/gmailService';
 import { imapService } from '../services/imap/imapService';
+import { AuthenticatedRequest } from '../middleware/auth';
 
-export const getSettings = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+export const getSettings = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
-    let settings = await Settings.findOne({ key: 'global_config' });
+    const userId = req.user!.id;
+    let settings = await Settings.findOne({ userId: new mongoose.Types.ObjectId(userId) });
     if (!settings) {
-      settings = await Settings.create({ key: 'global_config' });
+      settings = await Settings.create({ userId: new mongoose.Types.ObjectId(userId) });
     }
 
     res.json({
@@ -30,41 +33,115 @@ export const getSettings = async (_req: Request, res: Response, next: NextFuncti
   }
 };
 
-export const getGmailAuthUrl = (req: Request, res: Response): void => {
+export const getGmailAuthUrl = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
-    const url = gmailService.getAuthUrl();
+    const userId = req.user!.id;
+    const url = await gmailService.getAuthUrl(userId);
     res.json({ success: true, data: { url } });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: 'Google OAuth Client ID/Secret not configured yet in .env.' });
+    res.status(500).json({
+      success: false,
+      message: err.message || 'Google OAuth Client ID/Secret not configured yet in .env.'
+    });
   }
 };
 
-export const handleGmailCallback = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+/**
+ * Public browser landing redirect for Google OAuth.
+ * Google redirects the user's browser here via GET with query params code & state.
+ * This endpoint transmits code and state back to the frontend app via postMessage (popup)
+ * or redirect (full-page), so the frontend can submit them authenticated via POST.
+ */
+export const handleGmailCallbackLanding = (req: Request, res: Response): void => {
+  const { code, state, error } = req.query;
+  const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
+
+  const safeCode = typeof code === 'string' ? JSON.stringify(code) : 'null';
+  const safeState = typeof state === 'string' ? JSON.stringify(state) : 'null';
+  const safeError = typeof error === 'string' ? JSON.stringify(error) : 'null';
+  const safeClientUrl = JSON.stringify(clientUrl);
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Connecting Gmail...</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #0f172a; color: #f8fafc; }
+    .card { background: #1e293b; padding: 2rem; border-radius: 1rem; text-align: center; max-width: 400px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h3>Authenticating with Gmail...</h3>
+    <p>Please wait while we complete authorization.</p>
+  </div>
+  <script>
+    (function() {
+      var code = ${safeCode};
+      var state = ${safeState};
+      var error = ${safeError};
+      var targetOrigin = '*';
+      try {
+        targetOrigin = new URL(clientUrl).origin;
+      } catch (e) {
+        targetOrigin = clientUrl;
+      }
+
+      if (window.opener && !window.opener.closed) {
+        window.opener.postMessage({ type: 'GMAIL_AUTH_CALLBACK', code: code, state: state, error: error }, targetOrigin);
+        setTimeout(function() { window.close(); }, 500);
+      } else {
+        var target = new URL('/settings', clientUrl);
+        if (code) target.searchParams.set('code', code);
+        if (state) target.searchParams.set('state', state);
+        if (error) target.searchParams.set('error', error);
+        window.location.href = target.toString();
+      }
+    })();
+  </script>
+</body>
+</html>`;
+
+  res.send(html);
+};
+
+export const handleGmailCallback = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const { code } = req.body;
-    if (!code) {
-      res.status(400).json({ success: false, message: 'Authorization code is required.' });
+    const { code, state } = req.body;
+    if (!code || !state) {
+      res.status(400).json({ success: false, message: 'Authorization code and state are required.' });
       return;
     }
 
-    const result = await gmailService.handleCallback(code);
-    res.json({ success: true, message: 'Gmail connected successfully.', data: result });
-  } catch (err) {
-    next(err);
+    const userId = req.user!.id;
+    const result = await gmailService.handleCallback(userId, code, state);
+    res.json({
+      success: true,
+      message: 'Gmail connected successfully.',
+      data: {
+        connected: true,
+        email: result.email
+      }
+    });
+  } catch (err: any) {
+    res.status(400).json({ success: false, message: err.message || 'Failed to connect Gmail account.' });
   }
 };
 
-export const disconnectGmail = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+export const disconnectGmail = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
-    await gmailService.disconnect();
+    const userId = req.user!.id;
+    await gmailService.disconnect(userId);
     res.json({ success: true, message: 'Gmail disconnected.' });
   } catch (err) {
     next(err);
   }
 };
 
-export const updateIntegrationSettings = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+export const updateIntegrationSettings = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
+    const userId = req.user!.id;
     const { imapHost, imapPort, imapUser, imapPassword, imapTls, aiProvider, aiBaseUrl, aiModel } = req.body;
 
     const updates: Record<string, any> = {};
@@ -78,20 +155,39 @@ export const updateIntegrationSettings = async (req: Request, res: Response, nex
     if (aiModel !== undefined) updates.aiModel = aiModel;
 
     const updated = await Settings.findOneAndUpdate(
-      { key: 'global_config' },
-      updates,
+      { userId: new mongoose.Types.ObjectId(userId) },
+      {
+        $set: updates,
+        $setOnInsert: { userId: new mongoose.Types.ObjectId(userId) }
+      },
       { new: true, upsert: true }
     );
 
-    res.json({ success: true, message: 'Settings saved successfully.', data: updated });
+    // Return safe data without secrets
+    res.json({
+      success: true,
+      message: 'Settings saved successfully.',
+      data: {
+        gmailConnected: Boolean(updated.gmailConnected),
+        gmailEmail: updated.gmailEmail || '',
+        imapHost: updated.imapHost,
+        imapPort: updated.imapPort,
+        imapUser: updated.imapUser,
+        imapTls: updated.imapTls,
+        aiProvider: updated.aiProvider,
+        aiBaseUrl: updated.aiBaseUrl,
+        aiModel: updated.aiModel
+      }
+    });
   } catch (err) {
     next(err);
   }
 };
 
-export const testImap = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+export const testImap = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const result = await imapService.syncInbox();
+    const userId = req.user?.id;
+    const result = await imapService.syncInbox(userId);
     res.json({
       success: true,
       message: `IMAP connection verified. Found ${result.checked} unseen messages.`,
